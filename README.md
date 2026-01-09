@@ -548,6 +548,15 @@ const client = new SmartSocketClient(url);
 
 ---
 
+## Related Resources
+
+- **Server Library**: [smartsocket](../smartsocket/)
+- **Documentation Hub**: [smartsocket-docs](../smartsocket-docs/)
+- **Deployment Guide**: [../DEPLOYMENT.md](../DEPLOYMENT.md)
+- **Advanced Features**: [../SMARTSOCKET_FEATURES.md](../SMARTSOCKET_FEATURES.md)
+
+---
+
 ## License
 
 MIT License - See [LICENSE](../LICENSE)
