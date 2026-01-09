@@ -1,0 +1,57 @@
+{
+  "name": "smartsocket-client",
+  "version": "1.0.0",
+  "description": "Production-ready WebSocket client with auto-compression, auto-reconnect, and metrics - Like Socket.IO but lighter",
+  "type": "module",
+  "main": "index.js",
+  "types": "SmartSocketClient.d.ts",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "types": "./SmartSocketClient.d.ts"
+    },
+    "./client": {
+      "import": "./SmartSocketClient.js",
+      "types": "./SmartSocketClient.d.ts"
+    },
+    "./logger": {
+      "import": "./logger.js"
+    },
+    "./binary-encoder": {
+      "import": "./BinaryEncoder.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "SmartSocketClient.js",
+    "SmartSocketClient.d.ts",
+    "BinaryEncoder.js",
+    "logger.js",
+    "README.md"
+  ],
+  "keywords": [
+    "websocket",
+    "realtime",
+    "socket",
+    "client",
+    "compression",
+    "deflate",
+    "auto-reconnect",
+    "live",
+    "streaming"
+  ],
+  "author": "Erblin Kqiku",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/erblinkqikuu/smartsocket.git",
+    "directory": "smartsocket-client"
+  },
+  "homepage": "https://github.com/erblinkqikuu/smartsocket",
+  "bugs": {
+    "url": "https://github.com/erblinkqikuu/smartsocket/issues"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
