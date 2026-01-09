@@ -37,11 +37,15 @@ class SmartSocketClient {
   connect() {
     return new Promise((resolve, reject) => {
       try {
-        // Add namespace to URL if enabled
+        // Build correct WebSocket URL with namespace path
         let connectUrl = this.url;
         if (this.enableNamespaces && this.namespace !== '/') {
-          const separator = this.url.includes('?') ? '&' : '?';
-          connectUrl = this.url + separator + 'namespace=' + encodeURIComponent(this.namespace);
+          // Remove trailing slash from url if present
+          if (connectUrl.endsWith('/')) {
+            connectUrl = connectUrl.slice(0, -1);
+          }
+          // Append namespace path
+          connectUrl = connectUrl + this.namespace;
         }
 
         this.socket = new WebSocket(connectUrl);
