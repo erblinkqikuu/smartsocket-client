@@ -1,13 +1,11 @@
 /**
  * SmartSocket Client - Production WebSocket with compression & auto-reconnect
  * 
- * Features: DEFLATE compression, auto-reconnection, namespaces, acknowledgments, error handling
+ * Features: DEFLATE compression, auto-reconnection, rooms, acknowledgments, error handling
  */
 
 export interface SmartSocketClientOptions {
   apiKey?: string;
-  namespace?: string;
-  enableNamespaces?: boolean;
   enableAcknowledgments?: boolean;
   enableErrorHandling?: boolean;
   maxReconnectAttempts?: number;
@@ -29,11 +27,9 @@ export interface SmartSocketEvent {
 
 export interface SmartSocketStats {
   connected: boolean;
-  namespace: string;
   reconnectAttempts: number;
   pendingAcks: number;
   features: {
-    namespaces: boolean;
     acknowledgments: boolean;
     errorHandling: boolean;
   };

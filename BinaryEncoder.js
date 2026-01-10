@@ -348,7 +348,7 @@ export class BinaryEncoder {
   static async _deflateSimple(data) {
     try {
       // Use browser's CompressionStream for DEFLATE
-      if ('CompressionStream' in window) {
+      if (typeof window !== 'undefined' && 'CompressionStream' in window) {
         const stream = new ReadableStream({
           start(controller) {
             controller.enqueue(data);
@@ -388,7 +388,7 @@ export class BinaryEncoder {
   static async _inflateSimple(data) {
     try {
       // Use browser's DecompressionStream for DEFLATE
-      if ('DecompressionStream' in window) {
+      if (typeof window !== 'undefined' && 'DecompressionStream' in window) {
         const stream = new ReadableStream({
           start(controller) {
             controller.enqueue(data);

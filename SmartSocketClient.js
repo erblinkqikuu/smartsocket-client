@@ -1,204 +1,265 @@
-// SmartSocket Client - Real-time messaging with Namespaces, Acknowledgments, and Advanced Features
+// SmartSocket connection utility for real-time messaging
 import { logger } from './logger.js';
 import { BinaryEncoder } from './BinaryEncoder.js';
 
 class SmartSocketClient {
-  constructor(url, options = {}) {
-    // Support both old and new API
-    // Old: new SmartSocketClient(url, apiKey)
-    // New: new SmartSocketClient(url, { apiKey, enableNamespaces: true, ... })
-    if (typeof options === 'string') {
-      options = { apiKey: options };
-    }
-
+  constructor(url, apiKey, options = {}) {
     this.url = url;
-    this.apiKey = options.apiKey;
+    this.apiKey = apiKey;
     this.socket = null;
     this.listeners = {};
     this.connected = false;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = options.maxReconnectAttempts || 10;
-    this.reconnectDelay = options.reconnectDelay || 1000;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 1000; // Start with 1 second
     
-    // Feature flags
-    this.enableNamespaces = options.enableNamespaces !== false;
-    this.enableAcknowledgments = options.enableAcknowledgments !== false;
-    this.enableErrorHandling = options.enableErrorHandling !== false;
+    // Feature toggles - match server defaults (all enabled)
+    this.features = {
+      middleware: options.middleware !== false,
+      acknowledgments: options.acknowledgments !== false,
+      smartsocketApi: options.smartsocketApi !== false,
+      errorHandlers: options.errorHandlers !== false
+    };
     
-    // Namespace handling
-    this.namespace = options.namespace || '/';
-    
-    // Acknowledgment handling
-    this.acks = new Map();
+    // Acknowledgment system
+    this.pendingAcks = new Map();
     this.ackCounter = 0;
-    this.ackTimeout = options.ackTimeout || 30000;
+    this.ackTimeout = options.ackTimeout || 15000; // Increased from 5s to 15s for large data
+    
+    // Error handlers
+    this.errorHandlers = {
+      'connection-error': null,
+      'message-error': null,
+      'validation-error': null,
+      'ack-timeout': null,
+      'receive-error': null
+    };
   }
+
+  /**
+   * Generate unique acknowledgment ID
+   */
+  _generateAckId() {
+    return `ack_${++this.ackCounter}_${Date.now()}`;
+  }
+
+  /**
+   * Register acknowledgment handler
+   */
+  _registerAck(ackId, callback) {
+    const timeoutId = setTimeout(() => {
+      this.pendingAcks.delete(ackId);
+      this._handleError('ack-timeout', { ackId });
+      if (callback) callback(new Error('Acknowledgment timeout'));
+    }, this.ackTimeout);
+
+    this.pendingAcks.set(ackId, { timeoutId, callback });
+  }
+
+  /**
+   * Handle incoming acknowledgment
+   */
+  _handleAckResponse(ackId, response) {
+    const ackInfo = this.pendingAcks.get(ackId);
+    if (ackInfo) {
+      clearTimeout(ackInfo.timeoutId);
+      this.pendingAcks.delete(ackId);
+      
+      if (ackInfo.callback) {
+        if (response && response.error) {
+          ackInfo.callback(new Error(response.error));
+        } else {
+          ackInfo.callback(null, response);
+        }
+      }
+    }
+  }
+
+  /**
+   * Register error handler
+   */
+  onError(errorType, handler) {
+    if (!this.features.errorHandlers) return this;
+    
+    if (this.errorHandlers.hasOwnProperty(errorType)) {
+      this.errorHandlers[errorType] = handler;
+    }
+    return this;
+  }
+
+  /**
+   * Handle errors internally
+   */
+  _handleError(errorType, context = {}) {
+    if (!this.features.errorHandlers) return;
+    
+    const handler = this.errorHandlers[errorType];
+    if (handler) {
+      try {
+        handler(context);
+      } catch (err) {
+        logger.error(`[SmartSocket] Error in error handler: ${err.message}`);
+      }
+    }
+  }
+
 
   connect() {
     return new Promise((resolve, reject) => {
       try {
-        // Build correct WebSocket URL with namespace path
-        let connectUrl = this.url;
-        if (this.enableNamespaces && this.namespace !== '/') {
-          // Remove trailing slash from url if present
-          if (connectUrl.endsWith('/')) {
-            connectUrl = connectUrl.slice(0, -1);
-          }
-          // Append namespace path
-          connectUrl = connectUrl + this.namespace;
-        }
-
-        this.socket = new WebSocket(connectUrl);
+        this.socket = new WebSocket(this.url);
 
         this.socket.onopen = () => {
-          logger.log(`[SmartSocket] Connected to ${this.namespace}`);
+          logger.log('[SmartMessage] Connected to SmartSocket');
           this.connected = true;
           this.reconnectAttempts = 0;
-          this.reconnectDelay = this.reconnectDelay || 1000;
+          this.reconnectDelay = 1000; // Reset delay
           this.emit('connected');
           resolve();
         };
 
         this.socket.onmessage = async (event) => {
           try {
+            // BinaryEncoder automatically handles:
+            // - Format detection (binary, compressed, chunked, or JSON)
+            // - Decompression using native DecompressionStream
+            // - Chunk reassembly
+            // - Binary format decoding
             const messageData = event.data;
             const decoded = await BinaryEncoder.decode(messageData);
             
-            if (!decoded) return;
-
-            // Handle acknowledgments if enabled
-            if (this.enableAcknowledgments && decoded.data && decoded.data._ackId) {
-              const ackId = decoded.data._ackId;
-              if (this.acks.has(ackId)) {
-                const { resolve } = this.acks.get(ackId);
-                this.acks.delete(ackId);
-                resolve(decoded.data);
+            // If null, it means we're still waiting for more chunks
+            if (decoded === null || decoded === undefined) {
+              return;
+            }
+            
+            if (decoded && decoded.event) {
+              const { event: eventName, data: eventData } = decoded;
+              
+              // Extract acknowledgment ID if present in data
+              let ackId = null;
+              if (eventData && eventData.__ackId) {
+                ackId = eventData.__ackId;
+                delete eventData.__ackId;
+              }
+              
+              // Handle acknowledgment responses from server
+              if (eventName === '__ack__' && eventData && eventData.ackId) {
+                this._handleAckResponse(eventData.ackId, eventData.response);
                 return;
               }
-            }
-
-            // Regular event emission
-            if (decoded && decoded.event) {
-              this.emit(decoded.event, decoded.data);
+              
+              // Execute all listeners for this event
+              const result = this.listeners[eventName]?.map(cb => cb(eventData));
+              
+              // Emit internal event
+              this.emit(eventName, eventData);
+              
+              // Send acknowledgment if server requested it (but NOT for room/broadcast messages)
+              if (ackId && this.features.acknowledgments && !eventName.includes(':')) {
+                // Use direct send to avoid creating ack for the ack
+                try {
+                  const encoded = await BinaryEncoder.encode('__ack__', {
+                    ackId,
+                    response: result ? { success: true, result: result[0] } : { success: true }
+                  });
+                  if (Array.isArray(encoded)) {
+                    for (const chunk of encoded) {
+                      this.socket.send(chunk);
+                    }
+                  } else {
+                    this.socket.send(encoded);
+                  }
+                } catch (err) {
+                  logger.error('[SmartSocketClient] Failed to send ack:', err);
+                }
+              }
             }
           } catch (e) {
-            logger.error('[SmartSocket] Failed to decode message:', e);
+            logger.error('[SmartMessage] Failed to decode message:', e);
+            this._handleError('receive-error', { error: e.message });
           }
         };
 
         this.socket.onerror = (error) => {
-          logger.error('[SmartSocket] WebSocket error:', error);
+          logger.error('[SmartMessage] WebSocket error:', error);
           this.connected = false;
           this.emit('error', error);
         };
 
         this.socket.onclose = () => {
-          logger.log('[SmartSocket] Disconnected from server');
+          logger.log('[SmartMessage] Disconnected from SmartSocket');
           this.connected = false;
           this.emit('disconnected');
           
           // Automatic reconnection with exponential backoff
           if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
-            const delay = Math.min(this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1), 30000);
-            logger.log(`[SmartSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            logger.log(`[SmartMessage] Reconnecting in ${this.reconnectDelay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             
             setTimeout(() => {
-              logger.log('[SmartSocket] Attempting to reconnect...');
+              logger.log('[SmartMessage] Attempting to reconnect...');
               this.connect().catch((err) => {
-                logger.error('[SmartSocket] Reconnection failed:', err.message);
+                logger.error('[SmartMessage] Reconnection failed:', err.message);
               });
-            }, delay);
+            }, this.reconnectDelay);
+            
+            // Exponential backoff: increase delay by 1.5x each time, max 30 seconds
+            this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30000);
           } else {
-            logger.error('[SmartSocket] Max reconnection attempts reached');
+            logger.error('[SmartMessage] Max reconnection attempts reached');
           }
           
           reject(new Error('WebSocket connection closed'));
         };
       } catch (error) {
-        logger.error('[SmartSocket] Connection error:', error);
+        logger.error('[SmartMessage] Connection error:', error);
         reject(error);
       }
     });
   }
 
-  /**
-   * Send message with optional acknowledgment
-   */
-  async send(event, payload, onAck) {
+  async send(event, payload, callback = null) {
     if (!this.connected || !this.socket) {
-      logger.error('[SmartSocket] Not connected');
+      logger.error('[SmartMessage] Not connected');
       return false;
     }
 
     try {
-      let messagePayload = payload;
-
-      // Handle acknowledgment if callback provided and enabled
-      if (onAck && this.enableAcknowledgments && typeof onAck === 'function') {
-        const ackId = ++this.ackCounter;
-        messagePayload = { ...payload, _ackId: ackId };
-
-        const ackPromise = new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
-            this.acks.delete(ackId);
-            reject(new Error(`Acknowledgment timeout for ${event}`));
-          }, this.ackTimeout);
-
-          this.acks.set(ackId, { resolve, reject, timer });
-        });
-
-        // Fire and forget with callback
-        ackPromise
-          .then((data) => onAck(null, data))
-          .catch((err) => onAck(err, null));
+      // Add acknowledgment ID if callback provided and feature enabled
+      let ackId = null;
+      let dataToSend = payload;
+      
+      if (callback && this.features.acknowledgments) {
+        ackId = this._generateAckId();
+        dataToSend = { ...payload, __ackId: ackId };
+        this._registerAck(ackId, callback);
       }
 
-      const encoded = await BinaryEncoder.encode(event, messagePayload);
+      // BinaryEncoder automatically handles:
+      // - JSON encoding
+      // - Compression (if beneficial >15% savings)
+      // - Chunking for large messages
+      // - Binary format optimization
+      const encoded = await BinaryEncoder.encode(event, dataToSend);
       
       if (Array.isArray(encoded)) {
+        // Multiple chunks
         for (const chunk of encoded) {
           this.socket.send(chunk);
         }
       } else {
+        // Single message
         this.socket.send(encoded);
       }
       return true;
     } catch (error) {
-      logger.error('[SmartSocket] Send error:', error);
+      logger.error('[SmartMessage] Send error:', error);
+      this._handleError('message-error', { error: error.message, event });
       return false;
     }
   }
 
-  /**
-   * Send with await-able acknowledgment
-   */
-  async emit(event, payload) {
-    if (!this.connected || !this.socket) {
-      logger.error('[SmartSocket] Not connected');
-      return false;
-    }
-
-    try {
-      const encoded = await BinaryEncoder.encode(event, payload);
-      
-      if (Array.isArray(encoded)) {
-        for (const chunk of encoded) {
-          this.socket.send(chunk);
-        }
-      } else {
-        this.socket.send(encoded);
-      }
-      return true;
-    } catch (error) {
-      logger.error('[SmartSocket] Emit error:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Listen for events
-   */
   on(event, callback) {
     if (!this.listeners[event]) {
       this.listeners[event] = [];
@@ -208,19 +269,7 @@ class SmartSocketClient {
   }
 
   /**
-   * Listen once
-   */
-  once(event, callback) {
-    const wrapper = (data) => {
-      callback(data);
-      this.off(event, wrapper);
-    };
-    this.on(event, wrapper);
-    return this;
-  }
-
-  /**
-   * Remove listener
+   * Remove event listener
    */
   off(event, callback) {
     if (this.listeners[event]) {
@@ -229,31 +278,14 @@ class SmartSocketClient {
     return this;
   }
 
-  /**
-   * Fire event locally
-   */
-  fire(event, data) {
+  emit(event, data) {
     if (this.listeners[event]) {
-      this.listeners[event].forEach((callback) => {
-        try {
-          callback(data);
-        } catch (err) {
-          logger.error(`[SmartSocket] Error in listener for ${event}:`, err);
-        }
-      });
+      this.listeners[event].forEach((callback) => callback(data));
     }
+    return this;
   }
 
-  /**
-   * Disconnect from server
-   */
   disconnect() {
-    // Clear pending acknowledgments
-    for (const [, ack] of this.acks.entries()) {
-      clearTimeout(ack.timer);
-    }
-    this.acks.clear();
-
     if (this.socket) {
       this.socket.close();
       this.socket = null;
@@ -261,28 +293,8 @@ class SmartSocketClient {
     }
   }
 
-  /**
-   * Check if connected
-   */
   isConnected() {
     return this.connected;
-  }
-
-  /**
-   * Get client statistics
-   */
-  getStats() {
-    return {
-      connected: this.connected,
-      namespace: this.namespace,
-      reconnectAttempts: this.reconnectAttempts,
-      pendingAcks: this.acks.size,
-      features: {
-        namespaces: this.enableNamespaces,
-        acknowledgments: this.enableAcknowledgments,
-        errorHandling: this.enableErrorHandling
-      }
-    };
   }
 }
 
